@@ -22,14 +22,19 @@ type AppUser = {
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-const API =
-  process.env.NEXT_PUBLIC_API_BASE_URL ||
-  "http://127.0.0.1:5000";
+const API = process.env.NEXT_PUBLIC_API_BASE_URL;
 
 let supabase: SupabaseClient | null = null;
 
 if (supabaseUrl && supabaseKey) {
-  supabase = createClient(supabaseUrl, supabaseKey);
+  supabase = createClient(supabaseUrl, supabaseKey, {
+    auth: {
+      flowType: "implicit",
+      detectSessionInUrl: true,
+      persistSession: true,
+      autoRefreshToken: true,
+    },
+  });
 }
 
 export default function Home() {
@@ -41,12 +46,9 @@ export default function Home() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState("medium");
-  const [message, setMessage] = useState(
-    "Welcome to your workspace."
-  );
+  const [message, setMessage] = useState("Welcome to your workspace.");
   const [loading, setLoading] = useState(false);
-  const [assigningTask, setAssigningTask] =
-    useState<string | null>(null);
+  const [assigningTask, setAssigningTask] = useState<string | null>(null);
 
   useEffect(() => {
     if (!supabase) {
@@ -56,18 +58,32 @@ export default function Home() {
       return;
     }
 
-    supabase.auth.getSession().then(({ data, error }) => {
-      if (error) setMessage(error.message);
-      setUser(data.session?.user ?? null);
-    });
-
     const { data: listener } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
+      (event, session) => {
         setUser(session?.user ?? null);
+
+        if (event === "SIGNED_IN") {
+          setMessage("Google login successful!");
+        }
+
+        if (event === "SIGNED_OUT") {
+          setMessage("You have signed out.");
+        }
       }
     );
 
-    return () => listener.subscription.unsubscribe();
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (error) {
+        setMessage(error.message);
+        return;
+      }
+
+      setUser(data.session?.user ?? null);
+    });
+
+    return () => {
+      listener.subscription.unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -93,7 +109,7 @@ export default function Home() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo: `${window.location.origin}/auth/callback`,
+          redirectTo: window.location.origin,
         },
       });
 
@@ -110,7 +126,13 @@ export default function Home() {
   async function logout() {
     if (!supabase) return;
 
-    await supabase.auth.signOut();
+    const { error } = await supabase.auth.signOut();
+
+    if (error) {
+      setMessage(error.message);
+      return;
+    }
+
     setTasks([]);
     setUsers([]);
     setUser(null);
@@ -121,12 +143,25 @@ export default function Home() {
     path: string,
     options: RequestInit = {}
   ) {
-    if (!supabase) throw new Error("Supabase is not configured.");
+    if (!supabase) {
+      throw new Error("Supabase is not configured.");
+    }
 
-    const { data } = await supabase.auth.getSession();
+    if (!API) {
+      throw new Error("Backend API URL is missing in Vercel.");
+    }
+
+    const { data, error } = await supabase.auth.getSession();
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
     const token = data.session?.access_token;
 
-    if (!token) throw new Error("Please sign in first.");
+    if (!token) {
+      throw new Error("Please sign in first.");
+    }
 
     const response = await fetch(`${API}${path}`, {
       ...options,
@@ -137,10 +172,12 @@ export default function Home() {
       },
     });
 
-    const result = await response.json();
+    const result = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      throw new Error(result.error || "Something went wrong.");
+      throw new Error(
+        result.error || result.message || `Request failed: ${response.status}`
+      );
     }
 
     return result;
@@ -151,7 +188,7 @@ export default function Home() {
       const result = await apiRequest("/api/tasks");
       setTasks(result.tasks || []);
     } catch (error: any) {
-      setMessage(error.message);
+      setMessage("Tasks error: " + error.message);
     }
   }
 
@@ -160,7 +197,7 @@ export default function Home() {
       const result = await apiRequest("/api/tasks/users");
       setUsers(result.users || []);
     } catch (error: any) {
-      setMessage("Could not load users: " + error.message);
+      setMessage("Users error: " + error.message);
     }
   }
 
@@ -178,8 +215,8 @@ export default function Home() {
       await apiRequest("/api/tasks", {
         method: "POST",
         body: JSON.stringify({
-          title,
-          description,
+          title: title.trim(),
+          description: description.trim(),
           priority,
         }),
       });
@@ -188,9 +225,10 @@ export default function Home() {
       setDescription("");
       setPriority("medium");
       setMessage("Task created successfully!");
+
       await loadTasks();
     } catch (error: any) {
-      setMessage(error.message);
+      setMessage("Task creation failed: " + error.message);
     } finally {
       setLoading(false);
     }
@@ -206,7 +244,7 @@ export default function Home() {
       setMessage("Task status updated.");
       await loadTasks();
     } catch (error: any) {
-      setMessage(error.message);
+      setMessage("Status update failed: " + error.message);
     }
   }
 
@@ -240,6 +278,8 @@ export default function Home() {
         ...previous,
         [taskId]: "",
       }));
+
+      await loadTasks();
     } catch (error: any) {
       setMessage("Assignment failed: " + error.message);
     } finally {
