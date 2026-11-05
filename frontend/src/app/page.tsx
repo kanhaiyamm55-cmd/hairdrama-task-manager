@@ -19,28 +19,45 @@ type AppUser = {
   email: string;
 };
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-
-const supabase: SupabaseClient = createClient(supabaseUrl, supabaseKey);
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 const API =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:5000";
+  process.env.NEXT_PUBLIC_API_BASE_URL ||
+  "http://127.0.0.1:5000";
+
+let supabase: SupabaseClient | null = null;
+
+if (supabaseUrl && supabaseKey) {
+  supabase = createClient(supabaseUrl, supabaseKey);
+}
 
 export default function Home() {
   const [user, setUser] = useState<any>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
-  const [selectedUsers, setSelectedUsers] = useState<Record<string, string>>({});
+  const [selectedUsers, setSelectedUsers] =
+    useState<Record<string, string>>({});
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState("medium");
-  const [message, setMessage] = useState("Welcome to your workspace.");
+  const [message, setMessage] = useState(
+    "Welcome to your workspace."
+  );
   const [loading, setLoading] = useState(false);
-  const [assigningTask, setAssigningTask] = useState<string | null>(null);
+  const [assigningTask, setAssigningTask] =
+    useState<string | null>(null);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
+    if (!supabase) {
+      setMessage(
+        "Supabase configuration missing. Check Vercel environment variables."
+      );
+      return;
+    }
+
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (error) setMessage(error.message);
       setUser(data.session?.user ?? null);
     });
 
@@ -64,22 +81,35 @@ export default function Home() {
   }, [user]);
 
   async function login() {
+    if (!supabase) {
+      setMessage("Supabase configuration is missing.");
+      return;
+    }
+
     setLoading(true);
+    setMessage("Connecting to Google...");
 
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
-      },
-    });
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback`,
+        },
+      });
 
-    if (error) {
-      setMessage(error.message);
+      if (error) {
+        setMessage(error.message);
+        setLoading(false);
+      }
+    } catch (error: any) {
+      setMessage(error.message || "Google login failed.");
       setLoading(false);
     }
   }
 
   async function logout() {
+    if (!supabase) return;
+
     await supabase.auth.signOut();
     setTasks([]);
     setUsers([]);
@@ -87,7 +117,12 @@ export default function Home() {
     setMessage("You have signed out.");
   }
 
-  async function apiRequest(path: string, options: RequestInit = {}) {
+  async function apiRequest(
+    path: string,
+    options: RequestInit = {}
+  ) {
+    if (!supabase) throw new Error("Supabase is not configured.");
+
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token;
 
@@ -153,7 +188,6 @@ export default function Home() {
       setDescription("");
       setPriority("medium");
       setMessage("Task created successfully!");
-
       await loadTasks();
     } catch (error: any) {
       setMessage(error.message);
@@ -272,12 +306,10 @@ export default function Home() {
             <small>PENDING</small>
             <strong>{pending}</strong>
           </div>
-
           <div>
             <small>IN PROGRESS</small>
             <strong>{progress}</strong>
           </div>
-
           <div>
             <small>COMPLETED</small>
             <strong>{completed}</strong>
